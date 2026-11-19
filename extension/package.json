@@ -1,0 +1,74 @@
+{
+    "name": "xroar-mcp",
+    "displayName": "xroar MCP Server",
+    "description": "MCP Server for xroar emulator testing and automation",
+    "version": "1.0.0",
+    "engines": {
+        "vscode": "^1.80.0"
+    },
+    "categories": [
+        "Testing Tools",
+        "Debuggers",
+        "Emulators"
+    ],
+    "activationEvents": [
+        "onStartupFinished"
+    ],
+    "main": "./extension.js",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/milliluk/xroar-dev"
+    },
+    "publisher": "milliluk",
+    "license": "MIT",
+    "icons": "./icon.png",
+    "contributes": {
+        "commands": [
+            {
+                "command": "mcp.startServer",
+                "title": "MCP: Start Server"
+            },
+            {
+                "command": "mcp.stopServer",
+                "title": "MCP: Stop Server"
+            },
+            {
+                "command": "mcp.status",
+                "title": "MCP: Check Status"
+            },
+            {
+                "command": "mcp.testClient",
+                "title": "MCP: Run Test Client"
+            },
+            {
+                "command": "mcp.buildEmulator",
+                "title": "MCP: Build Emulator"
+            },
+            {
+                "command": "mcp.runTests",
+                "title": "MCP: Run Acceptance Tests"
+            }
+        ],
+        "configuration": {
+            "type": "object",
+            "title": "xroar MCP Settings",
+            "properties": {
+                "mcp.host": {
+                    "type": "string",
+                    "default": "localhost",
+                    "description": "MCP server host address"
+                },
+                "mcp.port": {
+                    "type": "number",
+                    "default": 3000,
+                    "description": "MCP server port (use a custom port, not 8000 or 8080)"
+                },
+                "mcp.serverPath": {
+                    "type": "string",
+                    "description": "Path to mcp-server/server.py",
+                    "default": "${workspaceFolder}/mcp-server/server.py"
+                }
+            }
+        }
+    }
+}
