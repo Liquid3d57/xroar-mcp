@@ -43,9 +43,9 @@ esac
 
 missing=()
 command -v gcc        >/dev/null 2>&1 || missing+=("mingw-w64-x86_64-toolchain")
+command -v git        >/dev/null 2>&1 || missing+=("git")
 command -v autoreconf >/dev/null 2>&1 || missing+=("autoconf automake libtool")
 command -v pkg-config >/dev/null 2>&1 || missing+=("mingw-w64-x86_64-pkgconf")
-command -v patch      >/dev/null 2>&1 || missing+=("patch")
 # doc/ builds xroar.info unconditionally: without makeinfo the top-level make
 # fails AFTER src/xroar.exe links, so you get a binary and a failed build.
 command -v makeinfo   >/dev/null 2>&1 || missing+=("texinfo")
@@ -56,7 +56,7 @@ fi
 if [ ${#missing[@]} -gt 0 ]; then
     echo "MISSING: ${missing[*]}" >&2
     echo >&2
-    echo "  pacman -S --needed base-devel autoconf automake libtool texinfo patch \\" >&2
+    echo "  pacman -S --needed base-devel autoconf automake libtool texinfo \\" >&2
     echo "      mingw-w64-x86_64-toolchain mingw-w64-x86_64-sdl3 \\" >&2
     echo "      mingw-w64-x86_64-libpng mingw-w64-x86_64-pkgconf \\" >&2
     echo "      mingw-w64-x86_64-libtre" >&2
@@ -71,11 +71,10 @@ cd "xroar-$VER"
 
 echo ">> applying $(ls "$HERE"/xroar/[0-9]*.patch | wc -l) patches"
 for p in "$HERE"/xroar/[0-9]*.patch; do
-    # --no-backup-if-mismatch: a hunk that lands at an offset is still an exact
-    # context match, but patch would leave a .orig beside the file. Offsets are
-    # normal here -- editing any early patch shifts every later one -- and the
-    # backups are pure litter in a tree that is deleted and rebuilt anyway.
-    patch -p1 -s --no-backup-if-mismatch < "$p" || { echo "FAILED: $(basename "$p")" >&2; exit 1; }
+    git -C "$HERE" apply --directory="xroar-$VER" --whitespace=nowarn "$p" || {
+        echo "FAILED: $(basename "$p")" >&2
+        exit 1
+    }
 done
 
 # Upstream SHIPS src/windows32/resources.{h,rc} pre-generated, precisely so that
@@ -90,7 +89,7 @@ done
 touch src/windows32/resources.h src/windows32/resources.rc
 
 echo ">> autoreconf"
-autoreconf -i
+autoreconf -fi
 
 # --with-tre, NOT --without-tre. The cross-build passes --without-tre because a
 # bare mingw sysroot has no POSIX regex.h; msys2 is not that. mingw-w64-x86_64-

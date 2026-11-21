@@ -58,15 +58,26 @@ function Install-Native($Root) {
     $msysBash = Join-Path $msysRoot "usr/bin/bash.exe"
     if (-not (Test-Path $msysBash)) { throw "MSYS2 is required. Install MSYS2.MSYS2 and rerun this script." }
 
-    $packages = "base-devel autoconf automake libtool texinfo patch mingw-w64-x86_64-toolchain mingw-w64-x86_64-libpng mingw-w64-x86_64-pkgconf mingw-w64-x86_64-libsystre mingw-w64-x86_64-libtre"
+    $packages = "base-devel autoconf automake libtool texinfo mingw-w64-x86_64-toolchain mingw-w64-x86_64-libpng mingw-w64-x86_64-pkgconf mingw-w64-x86_64-libsystre mingw-w64-x86_64-libtre"
     if (-not $Headless) { $packages += " mingw-w64-x86_64-sdl3" }
     & $msysBash -lc "pacman -Syu --noconfirm"
     & $msysBash -lc "pacman -S --needed --noconfirm $packages"
     if ($LASTEXITCODE -ne 0) { throw "MSYS2 package installation failed." }
 
     $mode = if ($Headless) { "headless" } else { "gui" }
-    & $msysBash -lc "cd '$($Root.Replace('\', '/'))' && MSYSTEM=MINGW64 bash build/build-msys2.sh $mode"
-    if ($LASTEXITCODE -ne 0) { throw "Native XRoar build failed." }
+    $gitPath = (Split-Path (Get-Command git).Source).Replace('\', '/')
+    if ($gitPath -match '^([A-Za-z]):') { $gitPath = "/" + $Matches[1].ToLower() + $gitPath.Substring(2) }
+    $buildCommand = "cd '$($Root.Replace('\', '/'))' && MSYSTEM=MINGW64 PATH=`"/mingw64/bin:${gitPath}:`$PATH`" bash build/build-msys2.sh $mode"
+    $previousMSYSTEM = $env:MSYSTEM
+    $env:MSYSTEM = "MINGW64"
+    try {
+        & $msysBash -lc $buildCommand
+        $buildExitCode = $LASTEXITCODE
+    } finally {
+        if ($null -eq $previousMSYSTEM) { Remove-Item Env:\MSYSTEM -ErrorAction SilentlyContinue }
+        else { $env:MSYSTEM = $previousMSYSTEM }
+    }
+    if ($buildExitCode -ne 0) { throw "Native XRoar build failed." }
 }
 
 function Install-Docker($Root) {
