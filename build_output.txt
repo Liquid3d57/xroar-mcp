@@ -1,0 +1,18 @@
+MISSING: SDL3 dev libraries (set MINGWROOT to your mingw prefix, or install SDL3 manually:   curl -LO https://github.com/libsdl-org/SDL/releases/download/release-3.4.12/SDL3-devel-3.4.12-mingw.tar.gz   tar xzf SDL3-devel-3.4.12-mingw.tar.gz   mkdir -p <dir> && cp -r SDL3-3.4.12/x86_64-w64-mingw32/* <dir/>   MINGWROOT=<dir> bash build/build-windows.sh
+
+  On native Windows, ensure the MinGW-w64 cross-toolchain is on PATH:
+    pacman -S mingw-w64-x86_64-toolchain  (msys2 MINGW64 shell)
+  or install a standalone MinGW-w64 distribution and add its bin/ to PATH.
+
+  pkg-config must be able to find the mingw libraries (typically via
+  MINGWROOT or the pkg-config path).
+
+  The headless build needs no SDL. For the GUI build, if pkg-config does
+  not find sdl3 automatically, set MINGWROOT to your mingw prefix path,
+  e.g.:  MINGWROOT=C:\mingw64 bash build/build-windows.sh
+
+  SDL3 can also be installed manually:
+    curl -LO https://github.com/libsdl-org/SDL/releases/download/release-3.4.12/SDL3-devel-3.4.12-mingw.tar.gz
+    tar xzf SDL3-devel-3.4.12-mingw.tar.gz
+    mkdir -p <your-mingw-dir> && cp -r SDL3-3.4.12/x86_64-w64-mingw32/* <your-mingw-dir/>
+    MINGWROOT=<your-mingw-dir> bash build/build-windows.sh

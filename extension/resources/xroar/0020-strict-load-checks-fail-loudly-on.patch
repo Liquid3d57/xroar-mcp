@@ -1,0 +1,362 @@
+From d5cbd08d702e4eebae791d07c0d9740348929d55 Mon Sep 17 00:00:00 2001
+From: milliluk-erik <build@localhost>
+Date: Mon, 3 Aug 2026 12:41:07 -0400
+Subject: [PATCH 20/49] strict-load-checks: fail loudly on
+
+The essential-ROM check originally guarded only the CoCo 3's Super ECB;
+every other machine still booted silently against a missing or wrong
+BASIC ROM, executing garbage from the reset vector while the run looked
+healthy.  Extend the same policy to the Dragon family and the MC-10,
+keyed on the CRC verdict each machine's existing rombank_verify_crc call
+already produces -- no new CRC lists.  Only the image the machine cannot
+reach a BASIC prompt without is required: a 4K CoCo's Extended BASIC,
+the Dragon 64's 64K-mode ROM and the Dragon Professional's BOOT (whose
+verify upstream deliberately discards) all stay optional.  The Dragon
+family shares one dragon_require_rom() helper; the MC-10's check is
+inline, same as the CoCo 3's.
+---
+ src/coco3.c             |  9 +++++++
+ src/dragon/coco.c       |  4 +++
+ src/dragon/deluxecoco.c |  1 +
+ src/dragon/dragon.c     | 33 ++++++++++++++++++++++++
+ src/dragon/dragon.h     |  6 +++++
+ src/dragon/dragon32.c   |  1 +
+ src/dragon/dragon64.c   |  4 +++
+ src/dragon/dragonpro.c  |  1 +
+ src/mc10.c              |  9 +++++++
+ src/xroar.c             | 57 ++++++++++++++++++++++++++++-------------
+ 10 files changed, 107 insertions(+), 18 deletions(-)
+
+diff --git a/src/coco3.c b/src/coco3.c
+index 542090e..4717272 100644
+--- a/src/coco3.c
++++ b/src/coco3.c
+@@ -587,6 +587,15 @@ static bool coco3_finish(struct part *p) {
+ 	rombank_report(mcc3->ROM0, "coco3", "Super Extended Colour BASIC");
+ 	mcc3->crc_secb = 0xb4c88d6c;  // Super Extended Colour BASIC (NTSC)
+ 	mcc3->has_secb = rombank_verify_crc(mcc3->ROM0, "Super Extended Colour BASIC", -1, "@coco3", xroar.cfg.force_crc_match, &mcc3->crc_secb);
++	if (!mcc3->has_secb) {
++		if (mcc3->ROM0->d[0]) {
++			fprintf(stderr, "xroar: Super Extended Colour BASIC ROM CRC invalid, exiting "
++					"(pass -force-crc-match to boot anyway)\n");
++		} else {
++			fprintf(stderr, "xroar: Super Extended Colour BASIC ROM not found (check -rompath), exiting\n");
++		}
++		exit(1);
++	}
+ 
+ 	// RAM configuration
+ 	ram_report(mcc3->RAM, "coco3", "motherboard RAM");
+diff --git a/src/dragon/coco.c b/src/dragon/coco.c
+index 395978c..baf825c 100644
+--- a/src/dragon/coco.c
++++ b/src/dragon/coco.c
+@@ -170,6 +170,10 @@ static bool coco_finish(struct part *p) {
+ 	md->crc_extbas = 0xa82a6254;  // ECB 1.1
+ 	md->has_extbas = rombank_verify_crc(md->ROM0, "Extended Colour BASIC", 0, "@cocoext", xroar.cfg.force_crc_match, &md->crc_extbas);
+ 
++	// Colour BASIC holds the reset vector; Extended BASIC is legitimately
++	// absent on a small machine and stays optional.
++	dragon_require_rom(md->ROM0, 1, md->has_bas, "Colour BASIC");
++
+ 	coco_pia_configuration(md);
+ 
+ 	// PAL overrides
+diff --git a/src/dragon/deluxecoco.c b/src/dragon/deluxecoco.c
+index 5b1033b..68620d0 100644
+--- a/src/dragon/deluxecoco.c
++++ b/src/dragon/deluxecoco.c
+@@ -245,6 +245,7 @@ static bool deluxecoco_finish(struct part *p) {
+ 	rombank_report(mdp->dragon.ROM0, "deluxecoco", "Advanced Colour BASIC");
+ 	md->crc_combined = 0x1cce231e;  // ACB 00.00.07
+ 	md->has_combined = rombank_verify_crc(mdp->dragon.ROM0, "Advanced Colour BASIC", -1, "@deluxecoco", xroar.cfg.force_crc_match, &md->crc_combined);
++	dragon_require_rom(mdp->dragon.ROM0, -1, md->has_combined, "Advanced Colour BASIC");
+ 
+ 	coco_pia_configuration(md);
+ 
+diff --git a/src/dragon/dragon.c b/src/dragon/dragon.c
+index da95e12..cc85e41 100644
+--- a/src/dragon/dragon.c
++++ b/src/dragon/dragon.c
+@@ -376,6 +376,39 @@ void dragon_initialise_common(struct dragon *md, struct machine_config *mc) {
+ 	m->keyboard.type = mc->keymap;
+ }
+ 
++// Essential-ROM check, the same policy applied to the CoCo 3's Super ECB in
++// coco3.c: a machine whose boot BASIC is absent or unrecognised executes
++// garbage from the reset vector onward, and an automated run downstream of
++// that looks healthy while testing nothing.  Only the image the machine
++// cannot reach a BASIC prompt without is required -- a 4K CoCo's missing
++// Extended BASIC and the Dragon 64's 64K-mode ROM stay optional, and no new
++// CRC lists are invented: `has` is the verdict the machine's existing
++// rombank_verify_crc call already produced.
++void dragon_require_rom(struct rombank *bank, int slot, _Bool has, const char *name) {
++	if (has)
++		return;
++	// Distinguish "wrong image" from "no image", same as coco3.c: a CRC
++	// mismatch can be overridden, a missing file cannot.
++	_Bool loaded = 0;
++	if (bank) {
++		if (slot < 0) {
++			loaded = 1;
++			for (unsigned i = 0; i < bank->nslots; ++i)
++				if (!bank->d[i])
++					loaded = 0;
++		} else if ((unsigned)slot < bank->nslots) {
++			loaded = bank->d[slot] != NULL;
++		}
++	}
++	if (loaded) {
++		fprintf(stderr, "xroar: %s ROM CRC invalid, exiting "
++				"(pass -force-crc-match to boot anyway)\n", name);
++	} else {
++		fprintf(stderr, "xroar: %s ROM not found (check -rompath), exiting\n", name);
++	}
++	exit(1);
++}
++
+ bool dragon_finish_common(struct dragon *md) {
+ 	struct machine *m = &md->public;
+ 	struct part *p = &m->part;
+diff --git a/src/dragon/dragon.h b/src/dragon/dragon.h
+index 36cc61c..d31eeea 100644
+--- a/src/dragon/dragon.h
++++ b/src/dragon/dragon.h
+@@ -188,6 +188,12 @@ void dragon_initialise_common(struct dragon *md, struct machine_config *mc);
+ bool dragon_finish_common(struct dragon *md);
+ void dragon_free_common(struct part *p);
+ 
++// Strict essential-ROM check, called by each derived machine's finish after
++// its CRC verification.  slot is the slot the essential image loads into, or
++// -1 when the whole bank is one image (the rombank_verify_crc convention).
++// Exits rather than returning when the check fails; see dragon.c.
++void dragon_require_rom(struct rombank *bank, int slot, _Bool has, const char *name);
++
+ bool dragon_has_interface(struct part *p, const char *ifname);
+ void dragon_attach_interface(struct part *p, const char *ifname, void *intf);
+ 
+diff --git a/src/dragon/dragon32.c b/src/dragon/dragon32.c
+index 8a1ce28..8c131db 100644
+--- a/src/dragon/dragon32.c
++++ b/src/dragon/dragon32.c
+@@ -130,6 +130,7 @@ static bool dragon32_finish(struct part *p) {
+ 	// Check CRCs
+ 	md->crc_combined = 0xe3879310;  // Dragon 32 BASIC
+ 	md->has_combined = rombank_verify_crc(md->ROM0, "BASIC", -1, "@d32", xroar.cfg.force_crc_match, &md->crc_combined);
++	dragon_require_rom(md->ROM0, -1, md->has_combined, "BASIC");
+ 
+ 	// Machine-specific PIA connections
+ 	switch (mc->ram_org) {
+diff --git a/src/dragon/dragon64.c b/src/dragon/dragon64.c
+index 581bbdf..f457488 100644
+--- a/src/dragon/dragon64.c
++++ b/src/dragon/dragon64.c
+@@ -175,6 +175,10 @@ static bool dragon64_finish(struct part *p) {
+ 	md->crc_altbas = 0x17893a42;  // Dragon 64 64K mode BASIC
+ 	md->has_altbas = rombank_verify_crc(mdp->ROM1, "64K BASIC", -1, "@d64_2", xroar.cfg.force_crc_match, &md->crc_altbas);
+ 
++	// The machine boots in 32K mode, so that is the essential image; a
++	// missing 64K-mode ROM leaves a usable (if odd) machine.
++	dragon_require_rom(mdp->dragon.ROM0, -1, md->has_combined, "32K BASIC");
++
+ 	// Override PIA1 PB2 as ROMSEL
+ 	md->PIA1->b.in_source |= (1<<2);  // pull-up
+ 	md->PIA1->b.data_postwrite = DELEGATE_AS0(void, dragon64_pia1b_data_postwrite, mdp);
+diff --git a/src/dragon/dragonpro.c b/src/dragon/dragonpro.c
+index 2435624..dcb1ba8 100644
+--- a/src/dragon/dragonpro.c
++++ b/src/dragon/dragonpro.c
+@@ -273,6 +273,7 @@ static bool dragonpro_finish(struct part *p) {
+ 	rombank_report(mdp->dragon.ROM0, "dragonpro", "32K BASIC");
+ 	md->crc_combined = 0x84f68bf9;  // Dragon 64 32K mode BASIC
+ 	md->has_combined = rombank_verify_crc(mdp->dragon.ROM0, "32K BASIC", -1, "@dragonpro_basic", xroar.cfg.force_crc_match, &md->crc_combined);
++	dragon_require_rom(mdp->dragon.ROM0, -1, md->has_combined, "32K BASIC");
+ 
+ 	md->CPU->mem_cycle = DELEGATE_AS2(void, bool, uint16, dragonpro_cpu_cycle, mdp);
+ 
+diff --git a/src/mc10.c b/src/mc10.c
+index 6001d06..147ab0e 100644
+--- a/src/mc10.c
++++ b/src/mc10.c
+@@ -432,6 +432,15 @@ static bool mc10_finish(struct part *p) {
+ 	rombank_report(mp->ROM0, "mc10", "MicroColour BASIC");
+ 	mp->crc_bas = 0x11fda97e;  // MicroColour BASIC 1.0 (MC-10)
+ 	mp->has_bas = rombank_verify_crc(mp->ROM0, "MicroColour BASIC", -1, "@mc10_compat", xroar.cfg.force_crc_match, &mp->crc_bas);
++	if (!mp->has_bas) {
++		if (mp->ROM0->d[0]) {
++			fprintf(stderr, "xroar: MicroColour BASIC ROM CRC invalid, exiting "
++					"(pass -force-crc-match to boot anyway)\n");
++		} else {
++			fprintf(stderr, "xroar: MicroColour BASIC ROM not found (check -rompath), exiting\n");
++		}
++		exit(1);
++	}
+ 
+ 	// RAM configuration
+ 	{
+diff --git a/src/xroar.c b/src/xroar.c
+index 0bc90f2..f9c7cf3 100644
+--- a/src/xroar.c
++++ b/src/xroar.c
+@@ -404,7 +404,7 @@ static void load_ram_apply(void);
+ enum load_format { LOAD_FMT_AUTO, LOAD_FMT_RAW, LOAD_FMT_DECB, LOAD_FMT_HEX, LOAD_FMT_SREC };
+ static unsigned long parse_num_ul(const char *s);
+ static int load_detect_format(const char *file);
+-static void load_blob(const char *spec);
++static _Bool load_blob(const char *spec);
+ static void add_run(const char *arg);
+ static void set_gain(double gain);
+ static void set_audio_record(const char *arg);
+@@ -1459,7 +1459,10 @@ void xroar_init_finish(void) {
+ 	if (private_cfg.file.snapshot) {
+ 		// If we're loading a snapshot, loading other media doesn't
+ 		// make sense (as it'll be overridden by the snapshot).
+-		read_snapshot(private_cfg.file.snapshot);
++		if (read_snapshot(private_cfg.file.snapshot) < 0) {
++			fprintf(stderr, "xroar: -load %s: failed, exiting\n", private_cfg.file.snapshot);
++			exit(1);
++		}
+ 	} else {
+ 		// Otherwise, attach any other media images.
+ 
+@@ -1468,6 +1471,11 @@ void xroar_init_finish(void) {
+ 			if (private_cfg.file.fd[i]) {
+ 				bool autorun = (autorun_media_slot == (media_slot_fd0 + i));
+ 				xroar_load_disk(private_cfg.file.fd[i], i, autorun);
++				if (!vdrive_disk_in_drive(xroar.vdrive_interface, i)) {
++					fprintf(stderr, "xroar: -load-fd%u %s: failed, exiting\n",
++						i, private_cfg.file.fd[i]);
++					exit(1);
++				}
+ 			}
+ 		}
+ 
+@@ -1554,7 +1562,10 @@ void xroar_init_finish(void) {
+ 
+ 	// Scripted pointer/keyboard timeline (joystick_script.c). Machine and any
+ 	// -load snapshot are live by now, so events schedule from the current tick.
+-	script_js_load(input_script_path);
++	if (input_script_path && script_js_load(input_script_path) < 0) {
++		fprintf(stderr, "xroar: -input-script %s: failed, exiting\n", input_script_path);
++		exit(1);
++	}
+ }
+ 
+ static void xroar_ui_set_config_autosave(void *sptr, int tag, void *smsg) {
+@@ -2976,16 +2987,16 @@ static int load_detect_format(const char *file) {
+ 	return LOAD_FMT_RAW;
+ }
+ 
+-static void load_blob(const char *spec) {
++static _Bool load_blob(const char *spec) {
+ 	if (!spec || !*spec || !xroar.machine)
+-		return;
++		return 0;
+ 	char *s = xstrdup(spec);
+ 	char *opts = s;
+ 	char *file = strsep(&opts, ",");
+ 	if (!file || !*file) {
+ 		LOG_MOD_WARN("load", "%s: no filename\n", spec);
+ 		free(s);
+-		return;
++		return 0;
+ 	}
+ 	int fmt = LOAD_FMT_AUTO;
+ 	int have_addr = 0;
+@@ -3027,7 +3038,7 @@ static void load_blob(const char *spec) {
+ 	}
+ 	if (bad) {
+ 		free(s);
+-		return;
++		return 0;
+ 	}
+ 
+ 	if (fmt == LOAD_FMT_AUTO)
+@@ -3037,7 +3048,7 @@ static void load_blob(const char *spec) {
+ 		if (!have_addr) {
+ 			LOG_MOD_WARN("load", "%s: raw load requires addr=\n", file);
+ 			free(s);
+-			return;
++			return 0;
+ 		}
+ 		// One part "RAM" everywhere but the MC-10, whose RAM0+RAM1
+ 		// pair spans as a single flat space (see flat_ram_resolve).
+@@ -3045,13 +3056,13 @@ static void load_blob(const char *spec) {
+ 		if (!flat_ram_resolve(&fr, (struct part *)xroar.machine)) {
+ 			LOG_MOD_WARN("load", "machine has no RAM to load into\n");
+ 			free(s);
+-			return;
++			return 0;
+ 		}
+ 		FILE *f = fopen(file, "rb");
+ 		if (!f) {
+ 			LOG_MOD_WARN("load", "%s: cannot open\n", file);
+ 			free(s);
+-			return;
++			return 0;
+ 		}
+ 		fseek(f, 0, SEEK_END);
+ 		long sz = ftell(f);
+@@ -3060,7 +3071,7 @@ static void load_blob(const char *spec) {
+ 			fclose(f);
+ 			LOG_MOD_WARN("load", "%s: empty or unreadable\n", file);
+ 			free(s);
+-			return;
++			return 0;
+ 		}
+ 		size_t want = (size_t)sz;
+ 		if (maxlen && want > maxlen)
+@@ -3075,7 +3086,7 @@ static void load_blob(const char *spec) {
+ 			LOG_MOD_WARN("load", "%s: only %zu of %zu bytes loaded (ran off end of RAM)\n",
+ 				     file, n, got);
+ 		free(s);
+-		return;
++		return 1;
+ 	}
+ 
+ 	// Formatted loads carry their own addresses.
+@@ -3090,11 +3101,14 @@ static void load_blob(const char *spec) {
+ 	case LOAD_FMT_SREC: rc = motorola_s19_read(file, 0); fn = "srec"; break;
+ 	default: rc = -1; fn = "?"; break;
+ 	}
+-	if (rc >= 0)
++	if (rc >= 0) {
+ 		LOG_MOD_PRINT("load", "%s -> CPU memory (%s)\n", file, fn);
+-	else
+-		LOG_MOD_WARN("load", "%s: %s load failed\n", file, fn);
++		free(s);
++		return 1;
++	}
++	LOG_MOD_WARN("load", "%s: %s load failed\n", file, fn);
+ 	free(s);
++	return 0;
+ }
+ 
+ // -load-ram FILE[,opts] - queue a file to load into RAM after the machine (and
+@@ -3104,8 +3118,12 @@ static void add_load_ram(const char *arg) {
+ }
+ 
+ static void load_ram_apply(void) {
+-	for (struct slist *l = private_cfg.file.load_ram; l; l = l->next)
+-		load_blob((const char *)l->data);
++	for (struct slist *l = private_cfg.file.load_ram; l; l = l->next) {
++		if (!load_blob((const char *)l->data)) {
++			fprintf(stderr, "xroar: -load-ram %s: failed, exiting\n", (const char *)l->data);
++			exit(1);
++		}
++	}
+ }
+ 
+ // Add a file to load and mark its slot to autorun.
+@@ -3534,7 +3552,10 @@ static void handle_trap(void *sptr) {
+ 		xroar_master_cycles = 0;
+ 	}
+ 	if (trap->load_spec) {
+-		load_blob(trap->load_spec);
++		if (!load_blob(trap->load_spec)) {
++			fprintf(stderr, "xroar: -trap-load %s: failed, exiting\n", trap->load_spec);
++			exit(1);
++		}
+ 	}
+ 	// Timeout goes last.  xroar_set_timeout("0") is synchronous: it calls
+ 	// xroar_quit(), which is exit().  Any action ordered after it on the

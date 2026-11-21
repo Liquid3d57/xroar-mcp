@@ -47,6 +47,10 @@
             {
                 "command": "mcp.runTests",
                 "title": "MCP: Run Acceptance Tests"
+            },
+            {
+                "command": "mcp.install",
+                "title": "MCP: Install and Configure"
             }
         ],
         "configuration": {
@@ -55,18 +59,24 @@
             "properties": {
                 "mcp.host": {
                     "type": "string",
-                    "default": "localhost",
+                    "default": "127.0.0.1",
                     "description": "MCP server host address"
                 },
                 "mcp.port": {
                     "type": "number",
-                    "default": 3000,
-                    "description": "MCP server port (use a custom port, not 8000 or 8080)"
+                    "default": 8000,
+                    "description": "MCP server port"
                 },
                 "mcp.serverPath": {
                     "type": "string",
                     "description": "Path to mcp-server/server.py",
                     "default": "${workspaceFolder}/mcp-server/server.py"
+                },
+                "mcp.installMode": {
+                    "type": "string",
+                    "enum": ["native", "docker", "both"],
+                    "default": "native",
+                    "description": "Installation mode used by MCP: Install and Configure"
                 }
             }
         }

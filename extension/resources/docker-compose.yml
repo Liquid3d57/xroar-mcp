@@ -1,0 +1,12 @@
+services:
+  xroar-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: xroar-mcp
+    ports:
+      - "${MCP_PORT:-8000}:8000"
+    environment:
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: "8000"
+    restart: unless-stopped

@@ -20,7 +20,7 @@ and every other path are offline.
     bash build/build-macos.sh headless   # null UI, the automation binary
     bash build/build-windows.sh          # MinGW cross-build from Linux/WSL
     bash build/build-windows.sh headless # MinGW console binary, no SDL
-    bash build/build-msys2.sh            # native Windows, msys2 MINGW64 shell
+    MINGWROOT="D:\Dev\xroar-mcp\xroar-mcp\build\SDL3-3.4.12\x86_64-w64-mingw32" bash build\build-windows.sh gui # MinGW GUI build with SDL3 (pre-installed)
     bash build/build-msys2.sh headless   # native Windows, no UI/SDL linkage
     bash build/build-lwasm.sh            # the assembler, all platforms
 

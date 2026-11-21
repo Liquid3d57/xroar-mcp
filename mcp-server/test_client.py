@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """Test client for the xroar MCP server."""
 
+import configparser
 import http.client
 import json
-import sys
-import time
+import os
 
-
-def MCP_HOST = "localhost"
-MCP_PORT = 8000
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+config = configparser.ConfigParser()
+config.read(os.path.join(PROJECT_ROOT, "config.ini"), encoding="utf-8")
+section = config["server"] if config.has_section("server") else {}
+MCP_HOST = os.environ.get("MCP_HOST", section.get("host", "127.0.0.1"))
+MCP_PORT = int(os.environ.get("MCP_PORT", section.get("port", "8000")))
 
 
 def call_endpoint(path, method="GET", body=None, params=None):

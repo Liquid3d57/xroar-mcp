@@ -5,20 +5,38 @@ Provides an HTTP-based interface for agents to interact with the xroar emulator,
 including building, running, and testing capabilities.
 """
 
+import argparse
+import configparser
 import http.server
 import json
 import os
+import shlex
 import subprocess
 import sys
-import threading
-import time
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import parse_qs, urlparse
 
 # Configuration
-PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BUILD_DIR = os.path.join(PROJECT_ROOT, "build")
 XROAR_DIR = os.path.join(PROJECT_ROOT, "xroar")
-BINARY_PATH = os.path.join(XROAR_DIR, "xroar.exe") if sys.platform.startswith("win") else os.path.join(XROAR_DIR, "xroar")
+BINARY_PATH = os.path.join(PROJECT_ROOT, "bin", "xroar-dev.exe") if sys.platform.startswith("win") else os.path.join(XROAR_DIR, "xroar")
+
+
+def load_config():
+    """Load server settings from config.ini, with process environment overrides."""
+    config = configparser.ConfigParser()
+    config.read(os.path.join(PROJECT_ROOT, "config.ini"), encoding="utf-8")
+    section = config["server"] if config.has_section("server") else {}
+    host = os.environ.get("MCP_HOST", section.get("host", "127.0.0.1"))
+    port = int(os.environ.get("MCP_PORT", section.get("port", "8000")))
+    return host, port
+
+
+def windows_bash_path(path):
+    """Convert a native Windows absolute path to the MSYS/Git Bash form."""
+    if sys.platform.startswith("win") and len(path) >= 3 and path[1] == ":":
+        return "/" + path[0].lower() + path[2:].replace("\\", "/")
+    return path
 
 # Global state
 emulator_process = None
@@ -27,30 +45,22 @@ server_running = True
 
 def find_binary():
     """Find the emulator binary."""
-    # Check common locations
     candidates = [
+        os.path.join(PROJECT_ROOT, "bin", "xroar-dev.exe"),
+        os.path.join(PROJECT_ROOT, "bin", "xroar.exe"),
         os.path.join(XROAR_DIR, "xroar.exe" if sys.platform.startswith("win") else "xroar"),
         os.path.join(PROJECT_ROOT, "xroar.exe" if sys.platform.startswith("win") else "xroar"),
         os.path.join(BUILD_DIR, "xroar.exe" if sys.platform.startswith("win") else "xroar"),
     ]
-    
     for candidate in candidates:
         if os.path.exists(candidate):
             return candidate
-    
-    # Try to build first
-    if not os.path.exists(candidates[0]):
-        print(f"Binary not found at {candidates[0]}, attempting build...")
-        if build_emulator():
-            return candidates[0]
-    
     return None
 
 
 def build_emulator():
     """Build the xroar emulator."""
     try:
-        # Try the appropriate build script for the platform
         if sys.platform.startswith("win"):
             build_script = os.path.join(BUILD_DIR, "build-windows.sh")
         elif sys.platform.startswith("darwin"):
@@ -59,26 +69,23 @@ def build_emulator():
             build_script = os.path.join(BUILD_DIR, "build-linux.sh")
         
         if os.path.exists(build_script):
-            result = subprocess.run(
-                ["bash", build_script],
-                cwd=PROJECT_ROOT,
-                capture_output=True,
-                text=True,
-                timeout=300
-            )
+            bash_script = os.path.relpath(build_script, PROJECT_ROOT).replace("\\", "/")
+            result = subprocess.run(["bash", bash_script], check=False, cwd=PROJECT_ROOT,
+                                    capture_output=True, text=True, timeout=300)
             if result.returncode == 0:
-                print("Build completed successfully")
-                return True
+                binary = find_binary()
+                return {"status": "success", "returncode": 0, "binary": binary,
+                        "stdout": result.stdout, "stderr": result.stderr,
+                        "message": "Build completed successfully"}
             else:
-                print(f"Build failed: {result.stderr}")
-                return False
+                return {"status": "error", "returncode": result.returncode,
+                        "stdout": result.stdout, "stderr": result.stderr,
+                        "message": "Build failed"}
         else:
-            print(f"No build script found at {build_script}")
-            # Try minimal compilation
-            return compile_minimal()
-    except Exception as e:
-        print(f"Error during build: {e}")
-        return False
+            return {"status": "error", "returncode": 2,
+                    "message": f"No build script found at {build_script}"}
+    except (OSError, subprocess.SubprocessError) as e:
+        return {"status": "error", "returncode": 1, "message": str(e)}
 
 
 def compile_minimal():
@@ -91,6 +98,7 @@ def compile_minimal():
         if os.path.exists(configure_script):
             result = subprocess.run(
                 ["bash", configure_script, "--without-opengl"],
+                check=False,
                 cwd=XROAR_DIR,
                 capture_output=True,
                 text=True,
@@ -103,6 +111,7 @@ def compile_minimal():
         if os.path.exists(makefile):
             result = subprocess.run(
                 ["make"],
+                check=False,
                 cwd=XROAR_DIR,
                 capture_output=True,
                 text=True,
@@ -116,7 +125,7 @@ def compile_minimal():
                 return False
         
         return False
-    except Exception as e:
+    except (OSError, subprocess.SubprocessError) as e:
         print(f"Error during minimal compile: {e}")
         return False
 
@@ -139,14 +148,17 @@ def start_emulator(headless=True, rom_path=None, commands=None):
     
     # Add any additional commands
     if commands:
+        if isinstance(commands, str):
+            commands = shlex.split(commands)
         for cmd_opt in commands:
-            cmd.append(cmd_opt)
+            cmd.append(str(cmd_opt))
     
     try:
         emulator_process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            stdin=subprocess.PIPE,
             text=True
         )
         return {
@@ -155,14 +167,12 @@ def start_emulator(headless=True, rom_path=None, commands=None):
             "command": " ".join(cmd),
             "message": f"Emulator started with PID {emulator_process.pid}"
         }
-    except Exception as e:
+    except OSError as e:
         return {"status": "error", "message": str(e)}
 
 
 def stop_emulator():
     """Stop the emulator process."""
-    global emulator_process
-    
     if emulator_process and emulator_process.poll() is None:
         try:
             emulator_process.terminate()
@@ -173,7 +183,7 @@ def stop_emulator():
                 emulator_process.kill()
                 emulator_process.wait()
             return {"status": "stopped", "message": "Emulator stopped successfully"}
-        except Exception as e:
+        except OSError as e:
             return {"status": "error", "message": str(e)}
     elif emulator_process:
         return {"status": "already_stopped", "message": "Emulator already stopped"}
@@ -187,13 +197,16 @@ def run_acceptance_tests(tolerated=None):
     if not binary:
         return {"status": "error", "message": "Emulator binary not found. Please build first."}
     
-    cmd = ["bash", os.path.join(BUILD_DIR, "acceptance.sh"), binary]
+    acceptance_script = os.path.relpath(os.path.join(BUILD_DIR, "acceptance.sh"), PROJECT_ROOT).replace("\\", "/")
+    binary_arg = os.path.relpath(binary, PROJECT_ROOT).replace("\\", "/")
+    cmd = ["bash", acceptance_script, binary_arg]
     if tolerated:
         cmd.extend(tolerated.split())
     
     try:
         result = subprocess.run(
             cmd,
+            check=False,
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
@@ -208,7 +221,7 @@ def run_acceptance_tests(tolerated=None):
         }
     except subprocess.TimeoutExpired:
         return {"status": "timeout", "message": "Acceptance tests timed out"}
-    except Exception as e:
+    except OSError as e:
         return {"status": "error", "message": str(e)}
 
 
@@ -222,6 +235,7 @@ def get_symbol_info(symbol_name):
         # Use strings to extract symbols
         result = subprocess.run(
             ["strings", binary],
+            check=False,
             capture_output=True,
             text=True,
             timeout=10
@@ -241,7 +255,7 @@ def get_symbol_info(symbol_name):
             "status": "not_found",
             "message": f"Symbol '{symbol_name}' not found in binary"
         }
-    except Exception as e:
+    except OSError as e:
         return {"status": "error", "message": str(e)}
 
 
@@ -251,7 +265,7 @@ def handle_request(handler_method):
         try:
             result = handler_method(*args, **kwargs)
             return {"status": "success", "data": result}
-        except Exception as e:
+        except (OSError, ValueError, TypeError) as e:
             return {"status": "error", "message": str(e)}
     return wrapper
 
@@ -261,7 +275,6 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
     
     def log_message(self, format, *args):
         """Suppress default logging."""
-        pass
     
     def do_GET(self):
         """Handle GET requests."""
@@ -410,10 +423,10 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
                     # Send input to the process if it's interactive
                     try:
                         if emulator_process.stdin:
-                            emulator_process.stdin.write((cmd + "\n").encode())
+                            emulator_process.stdin.write(cmd + "\n")
                             emulator_process.stdin.flush()
                         response = {"status": "command_sent", "command": cmd}
-                    except Exception as e:
+                    except (OSError, BrokenPipeError) as e:
                         response = {"status": "error", "message": str(e)}
                 else:
                     response = {"status": "not_running", "message": "Emulator not running"}
@@ -431,12 +444,10 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
             cmd = data.get("command", "")
             # Generic command execution
             try:
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=30
-                )
+                argv = shlex.split(cmd, posix=(os.name != "nt"))
+                if not argv:
+                    raise ValueError("Command is empty")
+                result = subprocess.run(argv, check=False, capture_output=True, text=True, timeout=30)
                 response = {
                     "status": "completed",
                     "returncode": result.returncode,
@@ -445,7 +456,7 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
                 }
             except subprocess.TimeoutExpired:
                 response = {"status": "timeout", "message": "Command timed out"}
-            except Exception as e:
+            except (OSError, ValueError) as e:
                 response = {"status": "error", "message": str(e)}
             
             self.send_response(200)
@@ -467,8 +478,6 @@ class MCPHandler(http.server.BaseHTTPRequestHandler):
 
 def run_server(port=8000, host="0.0.0.0"):
     """Run the MCP server."""
-    global server_running
-    
     server_address = (host, port)
     httpd = http.server.HTTPServer(server_address, MCPHandler)
     
@@ -482,7 +491,7 @@ def run_server(port=8000, host="0.0.0.0"):
     while server_running:
         try:
             httpd.handle_request()
-        except Exception:
+        except OSError:
             break
     
     httpd.server_close()
@@ -490,14 +499,30 @@ def run_server(port=8000, host="0.0.0.0"):
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("MCP_PORT", 8000))
-    host = os.environ.get("MCP_HOST", "0.0.0.0")
-    
-    # Print available information
-    binary = find_binary()
-    if binary:
-        print(f"Found emulator binary: {binary}")
+    parser = argparse.ArgumentParser(description="XRoar MCP HTTP server")
+    parser.add_argument("command", nargs="?", choices=["build", "test", "status"])
+    parser.add_argument("--host")
+    parser.add_argument("--port", type=int)
+    args = parser.parse_args()
+
+    configured_host, configured_port = load_config()
+    port = args.port or configured_port
+    host = args.host or configured_host
+
+    if args.command == "build":
+        print(json.dumps(build_emulator(), indent=2))
+    elif args.command == "test":
+        print(json.dumps(run_acceptance_tests(), indent=2))
+    elif args.command == "status":
+        binary = find_binary()
+        print(json.dumps({"binary_available": binary is not None,
+                          "binary": binary,
+                          "emulator_running": emulator_process is not None and emulator_process.poll() is None},
+                         indent=2))
     else:
-        print("No emulator binary found. Use /build endpoint to compile.")
-    
-    run_server(port, host)
+        binary = find_binary()
+        if binary:
+            print(f"Found emulator binary: {binary}", file=sys.stderr)
+        else:
+            print("No emulator binary found. Use /build endpoint to compile.", file=sys.stderr)
+        run_server(port, host)

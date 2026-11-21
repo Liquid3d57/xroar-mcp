@@ -1,0 +1,13 @@
+.git/
+.github/
+.vscode/
+.copilot/
+extension/
+bin/
+xroar-[0-9]*/
+lwasm/lwtools-[0-9]*/
+build/SDL3*/
+SDL3*/
+*.vsix
+*.exe
+*.dll

@@ -21,7 +21,7 @@ mostly LLM-speak optimized for LLMs.
 ## What you get
 
 | Capability | How |
-|---|---|
+| --- | --- |
 | Scripted input, no keyboard | `-input-script`, a text file of move/click/type/wait steps |
 | Stop at a defined point | `-trap pc=`, `xpc=`, `seconds=`, `cycle=`, `read=`, `write=` |
 | Get state out | `-trap-snap`, `-trap-screenshot`, `-trap-history`, gdb target |
@@ -293,7 +293,7 @@ The emulator can *consume* a symbol file; something has to write one. `tools/`
 is the host half, four dependency-free Python scripts:
 
 | Tool | Pairs with | What it does |
-|---|---|---|
+| --- | --- | --- |
 | `gensym.py` | patches 41, 47 | Builds the `.sym` / `.lines` pair from `lwasm` output — `@MainLoop` instead of an address that moves every build, plus the code/data map `-protect-mode` enforces |
 | `symread.py` | n/a | Reads that pair from Python: name → physical, and back |
 | `auditreport.py` | patch 37 | Turns the binary access-audit map into "these routines were never executed" |
@@ -305,7 +305,7 @@ variables configure them for yours. See `tools/README.md`.
 ## Layout
 
 | Path | Contents |
-|---|---|
+| --- | --- |
 | `xroar/` | Pristine XRoar release tarball + the patch series, applied in filename order |
 | `lwasm/` | lwtools tarball + its own patch series |
 | `tools/` | Host-side Python tools (see `tools/README.md`) |
@@ -333,7 +333,96 @@ Every patch in this series (`xroar/`, `lwasm/patches/`) and the scripts in
 `tools/` are MIT (`LICENSE.MIT`). That file is the license text and nothing
 else, so GitHub can recognise it; this paragraph is what it applies to.
 
-This fork is unaffiliated with upstream XRoar and lwtools. Please report bugs
-here unless you have reproduced them on stock XRoar or lwtools first.
+## MCP Integration
 
-Imagine the chaos Boisy will create with a tool like this.
+### Install on Windows or Docker Desktop
+
+Run the repository installer from an elevated or normal PowerShell terminal:
+
+```powershell
+.\install.ps1 -Mode native
+.\install.ps1 -Mode docker
+.\install.ps1 -Mode both
+```
+
+The native mode installs Python, Git, MSYS2, the MinGW toolchain, and builds the
+automation binary. Docker mode builds the Linux headless server image and starts
+it on the configured port. After installing the packaged VS Code extension, use
+**MCP: Install and Configure** and select `native`, `docker`, or `both` in
+`mcp.installMode`.
+
+This fork adds Model Context Protocol (MCP) support, turning the XRoar emulator into a system an LLM can drive, observe, and reason about programmatically.
+
+### MCP Server
+
+The MCP server (`mcp-server/server.py`) provides an HTTP-based interface for agents to interact with the xroar emulator. It supports the following endpoints:
+
+- **`/build`** - Build the xroar emulator
+- **`/status`** - Get the current status of the server and emulator
+- **`/command`** - Execute generic commands
+- **`/test`** - Run acceptance tests
+
+The server can:
+
+- Build the emulator from source
+- Start/stop the emulator process
+- Send commands to the emulator (input, trap conditions, etc.)
+- Retrieve state (memory, registers, screenshots, history)
+- Load RAM images
+
+Run the server with: `python mcp-server/server.py [--port PORT] [--host HOST]`
+
+Server settings can be configured in the repository-level [`config.ini`](./config.ini):
+
+```ini
+[server]
+host = 127.0.0.1
+port = 8000
+```
+
+Command-line arguments override environment variables, and environment variables override `config.ini`.
+
+### VS Code Extension
+
+The [`xroar-mcp`](https://marketplace.visualstudio.com/items?itemName=milliluk.xroar-mcp) VS Code extension provides a graphical interface for interacting with the MCP server. Features include:
+
+- **Start/Stop Server** - Launch or terminate the MCP server subprocess
+- **Check Status** - Query the server for emulator status
+- **Run Test Client** - Execute the test client script
+- **Build Emulator** - Trigger a build through the MCP server
+- **Run Tests** - Execute acceptance tests
+
+Configuration options:
+
+- `mcp.host` - Server host address (default: `localhost`)
+- `mcp.port` - Server port (default: `3000`, use a custom port, not 8000 or 8080)
+- `mcp.serverPath` - Path to `mcp-server/server.py`
+
+### MCP Workflow
+
+Typical agent workflow using MCP:
+
+1. **Start the MCP server** via the VS Code extension or manually
+2. **Build the emulator** if needed
+3. **Load a RAM image** or start the emulator
+4. **Send scripted input** using `-input-script` or MCP commands
+5. **Set trap conditions** to stop at defined points (`-trap pc=`, `xpc=`, etc.)
+6. **Read state** using `-trap-snap`, `-trap-screenshot`, or MCP `/status` endpoint
+7. **Execute commands** and gather results
+
+### MCP Commands (VS Code)
+
+| Command | Title |
+| --- | --- |
+| `mcp.startServer` | MCP: Start Server |
+| `mcp.stopServer` | MCP: Stop Server |
+| `mcp.status` | MCP: Check Status |
+| `mcp.testClient` | MCP: Run Test Client |
+| `mcp.buildEmulator` | MCP: Build Emulator |
+| `mcp.runTests` | MCP: Run Acceptance Tests |
+
+### Configuration
+
+The MCP server and extension work together to provide a seamless experience. The server handles the low-level emulator interaction, while the extension provides the user interface for configuration and control.
+
+See the `mcp-server/server.py` for detailed API documentation and the `extension/package.json` for extension configuration options.

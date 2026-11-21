@@ -1,0 +1,217 @@
+From 284c9a890f4c3b3a28112b0056b1955e477c8438 Mon Sep 17 00:00:00 2001
+From: milliluk-erik <build@localhost>
+Date: Mon, 3 Aug 2026 12:41:32 -0400
+Subject: [PATCH 32/49] configure: --without-screenshot, a real feature
+
+---
+ configure.ac     |  7 +++++--
+ src/debug.c      |  7 +++++++
+ src/screenshot.c |  3 +++
+ src/vo.h         |  4 ++++
+ src/xroar.c      | 16 +++++++++++++++-
+ 5 files changed, 34 insertions(+), 3 deletions(-)
+
+diff --git a/configure.ac b/configure.ac
+index b174bdb..98ae23c 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -173,6 +173,9 @@ AC_ARG_WITH([zlib],
+ AC_ARG_WITH([libpng],
+ 	AS_HELP_STRING([--without-libpng], [don't use libpng]) )
+ 
++AC_ARG_WITH([screenshot],
++	AS_HELP_STRING([--without-screenshot], [don't include screenshot support]) )
++
+ AC_ARG_ENABLE([becker],
+ 	AS_HELP_STRING([--disable-becker], [don't include Becker port support]) )
+ 
+@@ -354,7 +357,7 @@ AM_COND_IF([ZLIB], [AC_DEFINE([HAVE_ZLIB], 1, [Have zlib])])
+ 
+ ### libpng
+ 
+-AS_IF([test "x$with_libpng" != "xno"], [
++AS_IF([test "x$with_screenshot" != "xno" && test "x$with_libpng" != "xno"], [
+ 		AC_CHECK_LIB([png], [png_access_version_number], [PNG_LIBS="-lpng"])
+ 		AS_IF([test -z "$PNG_LIBS"], [
+ 			PKG_CHECK_MODULES([PNG], [libpng], :, :)
+@@ -865,7 +868,7 @@ AM_CONDITIONAL([WANT_UI_SDL], [test "x$enable_ui_sdl" = "xyes"])
+ AM_COND_IF([WANT_UI_SDL], [
+ 		AC_DEFINE([WANT_UI_SDL], 1, [Enable basic SDL UI]) ])
+ 
+-AM_CONDITIONAL([SCREENSHOT], [test -n "$have_libpng"])
++AM_CONDITIONAL([SCREENSHOT], [test "x$with_screenshot" != "xno" && test -n "$have_libpng"])
+ AM_COND_IF([SCREENSHOT], [AC_DEFINE([SCREENSHOT], 1, [Screenshots supported])])
+ 
+ AM_CONDITIONAL([AO_NULL], [test "x$enable_ao_null" != "xno"])
+diff --git a/src/debug.c b/src/debug.c
+index 309754f..3cf92d5 100644
+--- a/src/debug.c
++++ b/src/debug.c
+@@ -436,6 +436,7 @@ void emuext_shot(const char *arg) {
+ 	char path[512];
+ 	snprintf(path, sizeof(path), "%s/%s", dir, base);
+ 
++#ifdef SCREENSHOT
+ 	// The headless render instance is normally attached at init when a
+ 	// screenshot trap is present (see xroar.c).  With -emuext we attach it
+ 	// there too, so by here vo_interface->renderer exists and holds a real
+@@ -452,6 +453,12 @@ void emuext_shot(const char *arg) {
+ 	LOG_MOD_DEBUG(1, "emu", "SHOT %u (%s) -> %s%s\n", shot_count,
+ 	              defer ? "next" : "now", path,
+ 	              had_index ? "" : " (no {##}: each shot overwrites)");
++#else
++	// --without-screenshot: the LOG SHOT command degrades to a note.
++	LOG_MOD_WARN("emu", "SHOT %s: screenshots compiled out (--without-screenshot)\n", path);
++	(void)defer;
++	(void)had_index;
++#endif
+ 	shot_count++;
+ }
+ 
+diff --git a/src/screenshot.c b/src/screenshot.c
+index 9ddab3d..8f9cf1f 100644
+--- a/src/screenshot.c
++++ b/src/screenshot.c
+@@ -113,6 +113,8 @@ int screenshot_write_png(const char *filename, struct vo_interface *vo) {
+ }
+ #endif
+ 
++#ifdef SCREENSHOT
++
+ // Headless render instance for -trap-screenshot.  The null UI hands back a
+ // vo_interface with no renderer, so the machine's per-scanline render calls go
+ // to a no-op and nothing is buffered to capture.  When a screenshot trap is
+@@ -201,3 +203,4 @@ void screenshot_on_vsync(struct vo_interface *vo, int draw) {
+ 	free(ss_pending);
+ 	ss_pending = NULL;
+ }
++#endif  /* SCREENSHOT */
+diff --git a/src/vo.h b/src/vo.h
+index 6101935..587a3e3 100644
+--- a/src/vo.h
++++ b/src/vo.h
+@@ -275,15 +275,19 @@ void vo_set_draw_area(struct vo_interface *, int x, int y, int w, int h);
+ // vo_render_vsync().  Called with draw=0 during frameskip, as we still want to
+ // count scanlines.
+ 
++#ifdef SCREENSHOT
+ // Defined in screenshot.c; services any pending deferred trap screenshot once
+ // the post-trap frame is fully rasterised.
+ void screenshot_on_vsync(struct vo_interface *vo, int draw);
++#endif
+ 
+ inline void vo_vsync(struct vo_interface *vo, bool draw) {
+ 	if (draw)
+ 		DELEGATE_SAFE_CALL(vo->draw);
+ 	vo_render_vsync(vo->renderer);
++#ifdef SCREENSHOT
+ 	screenshot_on_vsync(vo, draw);
++#endif
+ }
+ 
+ // Refresh the display by calling draw().  Useful while single-stepping, where
+diff --git a/src/xroar.c b/src/xroar.c
+index 38efa02..c1e6cb8 100644
+--- a/src/xroar.c
++++ b/src/xroar.c
+@@ -1006,9 +1006,11 @@ static struct {
+  * Returns the UI interface to the caller (probably main()).
+  */
+ 
++#ifdef SCREENSHOT
+ // -trap-screenshot-when storage; option table (XC_SET_ENUM) and xroar_init both
+ // reference it, so it lives ahead of both.  0 = next (default), 1 = now.
+ static int option_screenshot_when = 0;
++#endif
+ 
+ struct ui_interface *xroar_init(int argc, char **argv) {
+ 	int argn = 1, ret;
+@@ -1339,7 +1341,7 @@ struct ui_interface *xroar_init(int argc, char **argv) {
+ 	}
+ 	xroar.vo_interface = xroar.ui_interface->vo_interface;
+ 
+-#ifdef WANT_TRAPS
++#if defined(WANT_TRAPS) && defined(SCREENSHOT)
+ 	// If any trap will take a screenshot, make sure there is a renderer for
+ 	// it to capture.  A headless (null UI) build hands back a vo_interface
+ 	// with no renderer, so the machine's scanlines would be discarded and
+@@ -1692,7 +1694,9 @@ void xroar_shutdown(void) {
+ 	if (shutting_down)
+ 		return;
+ 	shutting_down = 1;
++#ifdef SCREENSHOT
+ 	screenshot_flush(xroar.vo_interface);
++#endif
+ 	disable_all_traps();
+ 	profile_dump();
+ 	save_config();
+@@ -3789,6 +3793,7 @@ static void handle_trap_watch(void *sptr, bool RnW, uint32_t A, uint8_t D) {
+ 	handle_trap(trap);
+ }
+ 
++#ifdef SCREENSHOT
+ // Build a screenshot filename for the Nth trigger by inserting the number
+ // before the file extension: "shot.png" + 4 -> "shot4.png".  No extension ->
+ // number appended.  Caller frees.
+@@ -3804,6 +3809,7 @@ static char *screenshot_numbered_name(const char *base, unsigned long n) {
+ 	}
+ 	return out;
+ }
++#endif
+ 
+ // Per-instruction hooks (the -trap-history ring, the xpcrange= edge
+ // detector) cannot afford the part-tree walk trap_current_pc() and
+@@ -4150,6 +4156,7 @@ static void handle_trap(void *sptr) {
+ 			}
+ 		}
+ 	}
++#ifdef SCREENSHOT
+ 	if (trap->screenshot) {
+ 		// Classify the range once, on the first fire, and remember it: xroar
+ 		// frees a bounded range as soon as it is exhausted, after which a
+@@ -4190,6 +4197,7 @@ static void handle_trap(void *sptr) {
+ 			++trap->screenshot_count;
+ 		}
+ 	}
++#endif
+ 	if (trap->audio_start) {
+ 		int rate = (xroar.ao_interface && xroar.ao_interface->sound_interface)
+ 		    ? xroar.ao_interface->sound_interface->framerate : 44100;
+@@ -4451,6 +4459,7 @@ static struct xconfig_enum ao_format_list[] = {
+ 	{ XC_ENUM_END() }
+ };
+ 
++#ifdef SCREENSHOT
+ // -trap-screenshot-when next|now.  next (default) defers the capture to the
+ // first frame fully rendered after the trap; now grabs the buffer as-is.
+ static struct xconfig_enum screenshot_when_list[] = {
+@@ -4458,6 +4467,7 @@ static struct xconfig_enum screenshot_when_list[] = {
+ 	{ XC_ENUM_INT("now",  1, "frame buffer as-is at the trap instant") },
+ 	{ XC_ENUM_END() }
+ };
++#endif
+ 
+ /* Configuration directives */
+ 
+@@ -4666,8 +4676,10 @@ static struct xconfig_option const xroar_options[] = {
+ 	{ XC_SET_STRING("trap-ram", &private_cfg.debug.trap_def.ram) },
+ 	{ XC_SET_STRING("trap-byte", &private_cfg.debug.trap_def.byte_path) },
+ 	{ XC_SET_STRING("export-ram", &private_cfg.file.export_ram) },
++#ifdef SCREENSHOT
+ 	{ XC_SET_STRING("trap-screenshot", &private_cfg.debug.trap_def.screenshot) },
+ 	{ XC_SET_ENUM("trap-screenshot-when", &option_screenshot_when, screenshot_when_list) },
++#endif
+ 	{ XC_SET_STRING("trap-audio-start", &private_cfg.debug.trap_def.audio_start) },
+ 	{ XC_SET_INT1("trap-audio-stop", &private_cfg.debug.trap_def.audio_stop) },
+ 	{ XC_SET_INT1("trap-audio-toggle", &private_cfg.debug.trap_def.audio_toggle) },
+@@ -4934,8 +4946,10 @@ static void helptext(void) {
+ "    -trap-ratelimit-on  back to real time from this trap\n"
+ "    -trap-ram FILE      write flat physical RAM at trap (see -export-ram)\n"
+ "    -export-ram FILE    dump flat physical RAM of -load snapshot, then exit\n"
++#ifdef SCREENSHOT
+ "    -trap-screenshot FILE  write PNG of rendered frame at trap\n"
+ "    -trap-screenshot-when next|now  capture next clean frame (default) or now\n"
++#endif
+ "    -trap-audio-start FILE  begin audio capture at trap\n"
+ "    -trap-audio-stop    end audio capture at trap\n"
+ "    -trap-audio-toggle  pause/resume capture (splice windows into one file)\n"

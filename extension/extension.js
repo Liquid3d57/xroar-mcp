@@ -1,18 +1,55 @@
 const vscode = require('vscode');
 const { spawn } = require('child_process');
 const http = require('http');
+const fs = require('fs');
+const path = require('path');
 
 let serverProcess = null;
 let outputChannel = vscode.window.createOutputChannel('xroar MCP Server');
+
+function readServerIni(workspaceFolder) {
+    const iniPath = path.join(workspaceFolder || '', 'config.ini');
+    const result = {host: '127.0.0.1', port: 8000};
+    if (!workspaceFolder || !fs.existsSync(iniPath)) return result;
+    for (const line of fs.readFileSync(iniPath, 'utf8').split(/\r?\n/)) {
+        const match = /^\s*([a-zA-Z]+)\s*=\s*(.*?)\s*$/.exec(line);
+        if (!match) continue;
+        if (match[1].toLowerCase() === 'host') result.host = match[2];
+        if (match[1].toLowerCase() === 'port') result.port = parseInt(match[2], 10) || result.port;
+    }
+    return result;
+}
+
+function getServerSettings(config, workspaceFolder) {
+    const ini = readServerIni(workspaceFolder);
+    const hostSetting = config.inspect('host');
+    const portSetting = config.inspect('port');
+    const configuredHost = hostSetting && (hostSetting.workspaceFolderValue ?? hostSetting.workspaceValue ?? hostSetting.globalValue);
+    const configuredPort = portSetting && (portSetting.workspaceFolderValue ?? portSetting.workspaceValue ?? portSetting.globalValue);
+    return {
+        host: configuredHost && configuredHost !== '127.0.0.1' ? configuredHost : ini.host,
+        port: configuredPort && configuredPort !== 8000 ? configuredPort : ini.port
+    };
+}
 
 /**
  * Starts the MCP server as a subprocess
  */
 function startServer() {
     const config = vscode.workspace.getConfiguration('mcp');
-    const host = config.get('host', 'localhost');
-    const port = config.get('port', 3000);
-    const serverPath = config.get('serverPath', '${workspaceFolder}/mcp-server/server.py');
+    const configuredPath = config.get('serverPath', '');
+    const workspaceFolder = vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders[0].uri.fsPath : undefined;
+    const settings = getServerSettings(config, workspaceFolder);
+    const host = settings.host;
+    const port = settings.port;
+    const serverPath = (configuredPath && configuredPath !== '${workspaceFolder}/mcp-server/server.py'
+        ? configuredPath
+        : workspaceFolder ? `${workspaceFolder}/mcp-server/server.py` : undefined);
+
+    if (!serverPath || !workspaceFolder) {
+        vscode.window.showErrorMessage('Open an xroar-mcp workspace before starting the MCP server');
+        return;
+    }
     
     // Kill existing server if running
     if (serverProcess) {
@@ -22,8 +59,8 @@ function startServer() {
     outputChannel.appendLine(`Starting MCP server at http://${host}:${port}`);
     outputChannel.appendLine(`Using server: ${serverPath}`);
     
-    serverProcess = spawn('python3', [serverPath], {
-        cwd: vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders[1].uri.fsPath : undefined,
+    serverProcess = spawn('python', [serverPath], {
+        cwd: workspaceFolder,
         env: {
             ...process.env,
             MCP_HOST: host,
@@ -63,13 +100,32 @@ function stopServer() {
     }
 }
 
+function testConnection() {
+    if (!serverProcess) return;
+    const config = vscode.workspace.getConfiguration('mcp');
+    const workspaceFolder = vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders[0].uri.fsPath : undefined;
+    const settings = getServerSettings(config, workspaceFolder);
+    const host = settings.host;
+    const port = settings.port;
+    http.get(`http://${host}:${port}/health`, (res) => {
+        res.resume();
+        if (res.statusCode === 200) {
+            outputChannel.appendLine('MCP server health check passed');
+        }
+    }).on('error', (error) => {
+        outputChannel.appendLine(`MCP server health check failed: ${error.message}`);
+    });
+}
+
 /**
  * Checks the MCP server status
  */
 function checkStatus() {
     const config = vscode.workspace.getConfiguration('mcp');
-    const host = config.get('host', 'localhost');
-    const port = config.get('port', 3000);
+    const workspaceFolder = vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders[0].uri.fsPath : undefined;
+    const settings = getServerSettings(config, workspaceFolder);
+    const host = settings.host;
+    const port = settings.port;
     
     http.get(`http://${host}:${port}/status`, (res) => {
         let data = '';
@@ -100,20 +156,34 @@ function checkStatus() {
  * Runs the test client
  */
 function testClient() {
-    const pythonPath = require('python3') ? 'python3' : 'python';
-    const scriptPath = vscode.workspace.getConfiguration('mcp').get('serverPath', '${workspaceFolder}/mcp-server/test_client.py');
+    const config = vscode.workspace.getConfiguration('mcp');
+    const workspaceFolder = vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders[0].uri.fsPath : undefined;
+    const settings = getServerSettings(config, workspaceFolder);
+    const host = settings.host;
+    const port = settings.port;
+    if (!workspaceFolder) {
+        vscode.window.showErrorMessage('Open an xroar-mcp workspace before running the test client');
+        return;
+    }
+    const scriptPath = `${workspaceFolder}/mcp-server/test_client.py`;
     
     vscode.window.withProgress({
         location: vscode.ProgressLocation.Notification,
         cancellable: false
     }, async () => {
-        const exec = require('child_process').exec;
-        exec(`${pythonPath} "${scriptPath}"`, (error, stdout, stderr) => {
+        const spawn = require('child_process').spawn;
+        const child = spawn('python', [scriptPath], {
+            cwd: workspaceFolder,
+            env: {...process.env, MCP_HOST: host, MCP_PORT: port.toString()}
+        });
+        let stdout = '';
+        let stderr = '';
+        child.stdout.on('data', (data) => stdout += data);
+        child.stderr.on('data', (data) => stderr += data);
+        child.on('close', (code) => {
             outputChannel.appendLine(`[Test Client] stdout: ${stdout}`);
             outputChannel.appendLine(`[Test Client] stderr: ${stderr}`);
-            if (error) {
-                outputChannel.appendLine(`[Test Client] error: ${error.message}`);
-            }
+            if (code !== 0) outputChannel.appendLine(`[Test Client] exit code: ${code}`);
             vscode.window.showInformationMessage('Test client output sent to "xroar MCP Server" output channel');
         });
     });
@@ -124,8 +194,10 @@ function testClient() {
  */
 function buildEmulator() {
     const config = vscode.workspace.getConfiguration('mcp');
-    const host = config.get('host', 'localhost');
-    const port = config.get('port', 3000);
+    const workspaceFolder = vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders[0].uri.fsPath : undefined;
+    const settings = getServerSettings(config, workspaceFolder);
+    const host = settings.host;
+    const port = settings.port;
     
     http.get(`http://${host}:${port}/build`, (res) => {
         let data = '';
@@ -148,8 +220,10 @@ function buildEmulator() {
  */
 function runTests() {
     const config = vscode.workspace.getConfiguration('mcp');
-    const host = config.get('host', 'localhost');
-    const port = config.get('port', 3000);
+    const workspaceFolder = vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders[0].uri.fsPath : undefined;
+    const settings = getServerSettings(config, workspaceFolder);
+    const host = settings.host;
+    const port = settings.port;
     
     http.get(`http://${host}:${port}/test`, (res) => {
         let data = '';
@@ -167,6 +241,60 @@ function runTests() {
     });
 }
 
+/**
+ * Installs native or Docker dependencies and configures the MCP server.
+ */
+function installMcp() {
+    const config = vscode.workspace.getConfiguration('mcp');
+    const mode = config.get('installMode', 'native');
+    const port = config.get('port', 8000);
+    const workspaceFolder = vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders[0].uri.fsPath : undefined;
+    const workspaceInstaller = workspaceFolder ? `${workspaceFolder}/install.ps1` : undefined;
+    const bundledInstaller = `${__dirname}/resources/install.ps1`;
+    const installer = workspaceInstaller && fs.existsSync(workspaceInstaller) ? workspaceInstaller : bundledInstaller;
+
+    if (!fs.existsSync(installer)) {
+        vscode.window.showErrorMessage('MCP installer was not found in the workspace or extension package');
+        return;
+    }
+
+    vscode.window.withProgress({
+        location: vscode.ProgressLocation.Notification,
+        title: `Installing xroar MCP (${mode})`,
+        cancellable: false
+    }, async () => {
+        await new Promise((resolve) => {
+            const args = [
+                '-NoProfile',
+                '-ExecutionPolicy', 'Bypass',
+                '-File', installer,
+                '-Mode', mode,
+                '-Port', port.toString()
+            ];
+            if (workspaceFolder) args.push('-SourceRoot', workspaceFolder);
+            const child = spawn('pwsh', args, {cwd: workspaceFolder || __dirname});
+            let stdout = '';
+            let stderr = '';
+            child.stdout.on('data', (data) => {
+                stdout += data;
+                outputChannel.append(`[Installer] ${data}`);
+            });
+            child.stderr.on('data', (data) => {
+                stderr += data;
+                outputChannel.append(`[Installer stderr] ${data}`);
+            });
+            child.on('close', (code) => {
+                if (code === 0) {
+                    vscode.window.showInformationMessage(`xroar MCP installed and configured on port ${port}`);
+                } else {
+                    vscode.window.showErrorMessage(`MCP installation failed with exit code ${code}`);
+                }
+                resolve();
+            });
+        });
+    });
+}
+
 // Activate the extension
 function activate(context) {
     // Register all commands
@@ -176,6 +304,7 @@ function activate(context) {
     let testDisposable = vscode.commands.registerCommand('mcp.testClient', testClient);
     let buildDisposable = vscode.commands.registerCommand('mcp.buildEmulator', buildEmulator);
     let testsDisposable = vscode.commands.registerCommand('mcp.runTests', runTests);
+    let installDisposable = vscode.commands.registerCommand('mcp.install', installMcp);
     
     context.subscriptions.push(startDisposable);
     context.subscriptions.push(stopDisposable);
@@ -183,6 +312,7 @@ function activate(context) {
     context.subscriptions.push(testDisposable);
     context.subscriptions.push(buildDisposable);
     context.subscriptions.push(testsDisposable);
+    context.subscriptions.push(installDisposable);
     
     // Add output channel to sidebar
     context.subscriptions.push(outputChannel);
